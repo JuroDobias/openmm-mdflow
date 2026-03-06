@@ -12,6 +12,7 @@ authors = [{name = "openmm-mdflow contributors"}]
 dependencies = [
   "PyYAML>=6.0",
   "openmm>=8.4",
+  "parmed",
 ]
 
 [project.optional-dependencies]

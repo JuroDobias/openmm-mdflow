@@ -26,6 +26,23 @@ def _write_minimal_water_pdb(path: Path):
     )
 
 
+def _write_two_waters_pdb(path: Path):
+    path.write_text(
+        "\n".join(
+            [
+                "ATOM      1  O   HOH A   1       0.000   0.000   0.000  1.00  0.00           O",
+                "ATOM      2  H1  HOH A   1       0.095   0.000   0.000  1.00  0.00           H",
+                "ATOM      3  H2  HOH A   1      -0.032   0.090   0.000  1.00  0.00           H",
+                "ATOM      4  O   HOH A   2       3.500   0.000   0.000  1.00  0.00           O",
+                "ATOM      5  H1  HOH A   2       3.595   0.000   0.000  1.00  0.00           H",
+                "ATOM      6  H2  HOH A   2       3.468   0.090   0.000  1.00  0.00           H",
+                "END",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+
 def _base_config(tmp_path: Path, receptor_path: Path):
     return {
         "project": {
@@ -127,3 +144,66 @@ def test_restart_skip_and_checkpoint(tmp_path: Path):
 
     run_workflow(validated)
     assert done.exists()
+
+
+def test_mask_restraints_workflow_run(tmp_path: Path):
+    receptor = tmp_path / "receptor_two_waters.pdb"
+    _write_two_waters_pdb(receptor)
+    cfg = {
+        "project": {
+            "name": "it_masks",
+            "output_dir": str(tmp_path / "run_masks"),
+            "platform": "CPU",
+        },
+        "system": {
+            "receptor": {"file": str(receptor)},
+            "ligands": [],
+            "cofactors": [],
+            "solvation": {"mode": "vacuum"},
+        },
+        "forcefield": {
+            "protein": ["amber14-all.xml"],
+            "water_ions": ["amber14/tip3p.xml"],
+            "ligand": {"engine": "openff", "model": "openff-2.0.0", "cache": "ff.json"},
+            "hydrogen_mass_amu": 1.5,
+            "nonbonded_cutoff_nm": 0.9,
+        },
+        "steps": [
+            {
+                "id": "min1",
+                "type": "minimization",
+                "tolerance_kj_mol_nm": 10.0,
+                "max_iterations": 3,
+                "positional_restraints": {
+                    "mask": ":1@O",
+                    "k_kcal_mol_a2": 10.0,
+                    "tolerance_a": 0.5,
+                },
+            },
+            {
+                "id": "nvt1",
+                "type": "md",
+                "ensemble": "NVT",
+                "n_steps": 2,
+                "timestep_ps": 0.001,
+                "thermostat": {"kind": "langevin_middle", "temperature_k": 300, "friction_per_ps": 1.0},
+                "distance_restraints": [
+                    {
+                        "group1_mask": ":1@O",
+                        "group2_mask": ":2@O",
+                        "r0_a": 3.5,
+                        "k_kcal_mol_a2": 5.0,
+                    }
+                ],
+            },
+        ],
+    }
+    cfg_path = tmp_path / "workflow_mask.yaml"
+    with cfg_path.open("w", encoding="utf-8") as handle:
+        yaml.safe_dump(cfg, handle, sort_keys=False)
+
+    run_workflow(load_and_validate(cfg_path))
+
+    out = Path(cfg["project"]["output_dir"])
+    assert (out / "steps" / "00_min1" / "done.ok").exists()
+    assert (out / "steps" / "01_nvt1" / "done.ok").exists()

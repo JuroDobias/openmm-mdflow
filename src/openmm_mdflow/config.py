@@ -58,22 +58,21 @@ def _as_positive_float(value: Any, label: str, allow_zero: bool = False) -> floa
     return value
 
 
-def _validate_atom_list(atoms: Any, label: str) -> list[int]:
-    atoms = _require_list(atoms, label)
-    if not atoms:
-        raise ConfigError(f"`{label}` must not be empty.")
-    out: list[int] = []
-    for idx, atom in enumerate(atoms):
-        if not isinstance(atom, int) or atom < 0:
-            raise ConfigError(f"`{label}[{idx}]` must be a non-negative integer.")
-        out.append(atom)
-    return out
+def _as_non_empty_string(value: Any, label: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ConfigError(f"`{label}` must be a non-empty string.")
+    return value.strip()
 
 
 def _validate_positional_restraints(value: Any, label: str) -> dict[str, Any]:
     data = _require_mapping(value, label)
+    if "atoms" in data:
+        raise ConfigError(
+            f"`{label}.atoms` is no longer supported. "
+            f"Use `{label}.mask` with an Amber/ParmEd mask expression."
+        )
     return {
-        "atoms": _validate_atom_list(data.get("atoms"), f"{label}.atoms"),
+        "mask": _as_non_empty_string(data.get("mask"), f"{label}.mask"),
         "k_kcal_mol_a2": _as_positive_float(data.get("k_kcal_mol_a2"), f"{label}.k_kcal_mol_a2"),
         "tolerance_a": _as_positive_float(data.get("tolerance_a", 0.0), f"{label}.tolerance_a", allow_zero=True),
     }
@@ -84,13 +83,19 @@ def _validate_distance_restraints(value: Any, label: str) -> list[dict[str, Any]
     out: list[dict[str, Any]] = []
     for i, row in enumerate(rows):
         item = _require_mapping(row, f"{label}[{i}]")
-        atoms = _validate_atom_list(item.get("atoms"), f"{label}[{i}].atoms")
-        if len(atoms) != 2:
-            raise ConfigError(f"`{label}[{i}].atoms` must contain exactly 2 atom indices.")
+        if "atoms" in item:
+            raise ConfigError(
+                f"`{label}[{i}].atoms` is no longer supported. "
+                f"Use `{label}[{i}].group1_mask` and `{label}[{i}].group2_mask`."
+            )
         out.append(
             {
-                "atoms": atoms,
+                "group1_mask": _as_non_empty_string(item.get("group1_mask"), f"{label}[{i}].group1_mask"),
+                "group2_mask": _as_non_empty_string(item.get("group2_mask"), f"{label}[{i}].group2_mask"),
                 "r0_a": _as_positive_float(item.get("r0_a"), f"{label}[{i}].r0_a"),
+                "tolerance_a": _as_positive_float(
+                    item.get("tolerance_a", 0.0), f"{label}[{i}].tolerance_a", allow_zero=True
+                ),
                 "k_kcal_mol_a2": _as_positive_float(item.get("k_kcal_mol_a2"), f"{label}[{i}].k_kcal_mol_a2"),
             }
         )

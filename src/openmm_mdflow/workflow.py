@@ -8,7 +8,8 @@ from typing import Any
 from .builder import build_system
 from .platforms import select_platform
 from .reporting import build_reporters, checkpoint_interval
-from .restraints import add_distance_restraints, add_positional_restraints, validate_atom_indices
+from .restraints import add_distance_restraints, add_positional_restraints
+from .selection import AmberMaskResolver
 from .state import initialize_state, save_state, utc_now_iso
 
 
@@ -38,6 +39,21 @@ def _positions_from_state(state_path: Path):
     return state.getPositions(asNumpy=True)
 
 
+def _apply_state_positions_to_context(simulation, state_path: Path):
+    from openmm import XmlSerializer
+
+    with state_path.open("r", encoding="utf-8") as handle:
+        state = XmlSerializer.deserialize(handle.read())
+
+    simulation.context.setPositions(state.getPositions(asNumpy=True))
+    box_vectors = state.getPeriodicBoxVectors()
+    if box_vectors is not None:
+        simulation.context.setPeriodicBoxVectors(*box_vectors)
+    velocities = state.getVelocities()
+    if velocities is not None:
+        simulation.context.setVelocities(velocities)
+
+
 def _build_integrator(step_cfg: dict[str, Any]):
     import openmm as mm
     from openmm.unit import kelvin, picosecond
@@ -54,16 +70,51 @@ def _build_integrator(step_cfg: dict[str, Any]):
     raise ValueError(f"Unsupported integrator `{kind}`")
 
 
-def _apply_step_restraints(system, step_cfg: dict[str, Any], reference_positions, n_atoms: int):
+def _resolve_step_restraints(steps: list[dict[str, Any]], topology, positions) -> dict[str, dict[str, Any]]:
+    resolver = AmberMaskResolver(topology, positions)
+    resolved: dict[str, dict[str, Any]] = {}
+
+    for step_index, step_cfg in enumerate(steps):
+        step_id = step_cfg["id"]
+        step_resolved: dict[str, Any] = {}
+        if "positional_restraints" in step_cfg:
+            pos_cfg = step_cfg["positional_restraints"]
+            step_resolved["positional_atom_indices"] = resolver.resolve(
+                pos_cfg["mask"],
+                f"steps[{step_index}].positional_restraints.mask",
+            )
+
+        if "distance_restraints" in step_cfg:
+            rows: list[dict[str, Any]] = []
+            for i, row in enumerate(step_cfg["distance_restraints"]):
+                rows.append(
+                    {
+                        "group1_indices": resolver.resolve(
+                            row["group1_mask"],
+                            f"steps[{step_index}].distance_restraints[{i}].group1_mask",
+                        ),
+                        "group2_indices": resolver.resolve(
+                            row["group2_mask"],
+                            f"steps[{step_index}].distance_restraints[{i}].group2_mask",
+                        ),
+                        "r0_a": row["r0_a"],
+                        "tolerance_a": row.get("tolerance_a", 0.0),
+                        "k_kcal_mol_a2": row["k_kcal_mol_a2"],
+                    }
+                )
+            step_resolved["distance_rows"] = rows
+        resolved[step_id] = step_resolved
+    return resolved
+
+
+def _apply_step_restraints(system, step_cfg: dict[str, Any], reference_positions, resolved_step_restraints: dict[str, Any]):
     if "positional_restraints" in step_cfg:
         pos_cfg = step_cfg["positional_restraints"]
-        validate_atom_indices(pos_cfg["atoms"], n_atoms, "positional_restraints.atoms")
-        add_positional_restraints(system, reference_positions, pos_cfg)
+        atom_indices = resolved_step_restraints["positional_atom_indices"]
+        add_positional_restraints(system, reference_positions, atom_indices, pos_cfg)
 
     if "distance_restraints" in step_cfg:
-        for i, row in enumerate(step_cfg["distance_restraints"]):
-            validate_atom_indices(row["atoms"], n_atoms, f"distance_restraints[{i}].atoms")
-        add_distance_restraints(system, step_cfg["distance_restraints"])
+        add_distance_restraints(system, resolved_step_restraints["distance_rows"])
 
 
 def _save_final_pdb(simulation, path: Path):
@@ -126,7 +177,7 @@ def run_workflow(config: dict[str, Any]):
         topology, base_positions, base_system = artifacts.topology, artifacts.positions, artifacts.system
         pdb_path, xml_path = artifacts.pdb_path, artifacts.system_path
 
-    n_atoms = topology.getNumAtoms()
+    step_restraints = _resolve_step_restraints(config["steps"], topology, base_positions)
 
     manifest = initialize_state(
         output_dir,
@@ -184,7 +235,7 @@ def run_workflow(config: dict[str, Any]):
         if prev_state_path is not None and prev_state_path.exists():
             reference_positions = _positions_from_state(prev_state_path)
 
-        _apply_step_restraints(step_system, step_cfg, reference_positions, n_atoms)
+        _apply_step_restraints(step_system, step_cfg, reference_positions, step_restraints.get(step_id, {}))
         integrator = _build_integrator(step_cfg)
 
         if step_cfg["type"] == "md" and step_cfg["ensemble"] == "NPT":
@@ -228,7 +279,7 @@ def run_workflow(config: dict[str, Any]):
             if completed_steps < int(step_cfg["n_steps"]):
                 simulation.loadState(str(checkpoint_path))
         elif prev_state_path is not None and prev_state_path.exists():
-            simulation.loadState(str(prev_state_path))
+            _apply_state_positions_to_context(simulation, prev_state_path)
 
         if step_cfg["type"] == "minimization":
             simulation.minimizeEnergy(

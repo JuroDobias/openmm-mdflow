@@ -6,7 +6,7 @@ It is designed for YAML-driven workflows with:
 - Protein/ligand/cofactor system setup
 - Ligand parameterization with `openff`, `gaff`, or `espaloma`
 - Step-based minimization and MD
-- Positional and distance restraints (atom index based)
+- Positional and distance restraints via Amber/ParmEd mask expressions
 - Checkpointing and automatic restart/skip behavior
 
 This tool does not import or depend on `atom_openmm` at runtime.
@@ -83,7 +83,7 @@ steps:
     tolerance_kj_mol_nm: 10.0
     max_iterations: 1000
     positional_restraints:
-      atoms: [1, 2, 3]
+      mask: ":1-3 & !@H="
       k_kcal_mol_a2: 25.0
       tolerance_a: 1.5
 
@@ -100,8 +100,10 @@ steps:
       pressure_bar: 1.0
       frequency: 25
     distance_restraints:
-      - atoms: [10, 220]
+      - group1_mask: ":L1 & !@H="
+        group2_mask: ":45,67,89@CA,C,N,O"
         r0_a: 3.0
+        tolerance_a: 0.2
         k_kcal_mol_a2: 5.0
     reporters:
       traj:
@@ -118,3 +120,5 @@ steps:
 - Receptor currently supports `.pdb` and `.sdf`.
 - Ligands/cofactors support `.sdf` or `.pdb`.
 - SDF-based ligand/cofactor parameterization requires `openmmforcefields` and OpenFF components.
+- Restraints now require Amber mask fields (`mask`, `group1_mask`, `group2_mask`); old index-based `atoms` keys are not supported.
+- Distance restraints are flat-bottom harmonic around `r0_a` with optional `tolerance_a` (default `0.0` A).
