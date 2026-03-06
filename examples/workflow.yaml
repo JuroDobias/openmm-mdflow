@@ -1,0 +1,50 @@
+project:
+  name: demo_mdflow
+  output_dir: runs/demo_mdflow
+  platform: auto
+
+system:
+  receptor:
+    file: ../../tests/3ptb/3ptb.pdb
+  ligands:
+    - file: ../../tests/3ptb/BEN_ideal.sdf
+      residue_name: L1
+  cofactors: []
+  solvation:
+    mode: explicit
+    ionic_strength_molar: 0.15
+    padding_nm: 1.0
+
+forcefield:
+  protein: ["amber14-all.xml"]
+  water_ions: ["amber14/tip3p.xml"]
+  ligand:
+    engine: openff
+    model: openff-2.0.0
+    cache: ff.json
+  hydrogen_mass_amu: 1.5
+  nonbonded_cutoff_nm: 0.9
+
+steps:
+  - id: min1
+    type: minimization
+    tolerance_kj_mol_nm: 10.0
+    max_iterations: 100
+
+  - id: nvt_eq
+    type: md
+    ensemble: NVT
+    n_steps: 1000
+    timestep_ps: 0.004
+    thermostat:
+      kind: langevin_middle
+      temperature_k: 300
+      friction_per_ps: 1.0
+    reporters:
+      state:
+        interval: 100
+      traj:
+        format: dcd
+        interval: 100
+      checkpoint:
+        interval: 200

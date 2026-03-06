@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "openmm-mdflow"
+version = "0.1.0"
+description = "Standalone OpenMM 8.4 MD workflow runner"
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [{name = "openmm-mdflow contributors"}]
+dependencies = [
+  "PyYAML>=6.0",
+  "openmm>=8.4",
+]
+
+[project.optional-dependencies]
+setup = [
+  "openmmforcefields",
+  "openff-toolkit",
+]
+test = [
+  "pytest>=8.0",
+]
+
+[project.scripts]
+openmm-mdflow = "openmm_mdflow.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = "test_*.py"
