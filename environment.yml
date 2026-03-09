@@ -2,11 +2,12 @@ name: openmm-mdflow
 channels:
   - conda-forge
 dependencies:
-  - python>=3.11
+  - python=3.12
   - pip
   - openmm>=8.4
   - pyyaml>=6.0
   - parmed
+  - espaloma
   - openmmforcefields
   - openff-toolkit
   - pytest>=8.0

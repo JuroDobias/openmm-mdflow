@@ -25,6 +25,8 @@ pip install -e .
 openmm-mdflow --help
 ```
 
+`environment.yml` pins Python 3.12 and includes `espaloma`, so `forcefield.ligand.engine: espaloma` works in a fresh environment.
+
 Optional editable install with extras (alternative to `environment.yml` dependency set):
 
 ```bash
