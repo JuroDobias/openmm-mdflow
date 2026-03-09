@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
@@ -159,6 +160,12 @@ def _run_md_step(simulation, step_cfg: dict[str, Any], step_dir: Path, starting_
     return completed
 
 
+def _calc_ns_per_day(simulated_ns: float, wall_seconds: float) -> float:
+    if simulated_ns <= 0.0 or wall_seconds <= 0.0:
+        return 0.0
+    return simulated_ns / (wall_seconds / 86400.0)
+
+
 def run_workflow(config: dict[str, Any]):
     from openmm import MonteCarloBarostat
     from openmm.app import Simulation
@@ -193,7 +200,7 @@ def run_workflow(config: dict[str, Any]):
 
     for step_index, step_cfg in enumerate(config["steps"]):
         step_id = step_cfg["id"]
-        step_dir = steps_root / f"{step_index:02d}_{step_id}"
+        step_dir = steps_root / step_id
         step_dir.mkdir(parents=True, exist_ok=True)
 
         done_file = step_dir / "done.ok"
@@ -221,6 +228,7 @@ def run_workflow(config: dict[str, Any]):
             manifest["steps"][step_id] = step_state
             manifest["updated_at"] = utc_now_iso()
             save_state(output_dir, manifest)
+            print(f"[step {step_id}] skipped (already completed).")
             prev_state_path = final_state_path
             continue
 
@@ -270,6 +278,8 @@ def run_workflow(config: dict[str, Any]):
             else:
                 raise exc
         simulation.context.setPositions(base_positions)
+        step_wall_start = time.perf_counter()
+        start_energy = simulation.context.getState(getEnergy=True).getPotentialEnergy().value_in_unit(kilojoule_per_mole)
 
         completed_steps = 0
         if step_cfg["type"] == "md" and checkpoint_path.exists() and progress_path.exists():
@@ -287,8 +297,26 @@ def run_workflow(config: dict[str, Any]):
                 maxIterations=int(step_cfg["max_iterations"]),
             )
             completed_steps = 0
+            wall_seconds = time.perf_counter() - step_wall_start
+            end_energy = simulation.context.getState(getEnergy=True).getPotentialEnergy().value_in_unit(kilojoule_per_mole)
+            delta_energy = end_energy - start_energy
+            print(
+                f"[step {step_id}] minimization done in {wall_seconds:.2f}s | "
+                f"dE={delta_energy:.2f} kJ/mol | Efinal={end_energy:.2f} kJ/mol"
+            )
         else:
+            md_completed_before = completed_steps
             completed_steps = _run_md_step(simulation, step_cfg, step_dir, completed_steps)
+            wall_seconds = time.perf_counter() - step_wall_start
+            steps_ran = max(0, int(completed_steps - md_completed_before))
+            simulated_ns = (steps_ran * float(step_cfg["timestep_ps"])) / 1000.0
+            ns_day = _calc_ns_per_day(simulated_ns, wall_seconds)
+            end_energy = simulation.context.getState(getEnergy=True).getPotentialEnergy().value_in_unit(kilojoule_per_mole)
+            print(
+                f"[step {step_id}] md done in {wall_seconds:.2f}s | "
+                f"steps={steps_ran}/{int(step_cfg['n_steps'])} | sim={simulated_ns:.4f} ns | "
+                f"speed={ns_day:.2f} ns/day | Efinal={end_energy:.2f} kJ/mol"
+            )
 
         simulation.saveState(str(final_state_path))
         _save_final_pdb(simulation, final_pdb_path)

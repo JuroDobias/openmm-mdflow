@@ -13,17 +13,22 @@ This tool does not import or depend on `atom_openmm` at runtime.
 
 ## Installation
 
+Assuming conda is already initialized and available in your shell:
+
 ```bash
-source ~/Software/pymol/etc/profile.d/conda.sh
-conda activate atm8.4.0
-cd /home/juro/Software/AToM-OpenMM/tool/openmm-mdflow
-pip install -e ".[test]"
+cd tool/openmm-mdflow
+conda env create -f environment.yml
+# if the env already exists:
+conda env update -f environment.yml --prune
+conda activate openmm-mdflow
+pip install -e .
+openmm-mdflow --help
 ```
 
-To use ligand/cofactor parameterization from SDF files:
+Optional editable install with extras (alternative to `environment.yml` dependency set):
 
 ```bash
-pip install -e ".[setup]"
+pip install -e ".[setup,test]"
 ```
 
 ## CLI
@@ -39,7 +44,7 @@ openmm-mdflow run --config workflow.yaml
 
 - `output_dir/system/system.xml`
 - `output_dir/system/system.pdb`
-- `output_dir/steps/<NN>_<step_id>/...`
+- `output_dir/steps/<step_id>/...`
 - `output_dir/.mdflow/state.json`
 
 Each completed step writes `done.ok`. Re-running the same workflow:

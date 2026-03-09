@@ -101,9 +101,9 @@ def test_workflow_build_and_run(tmp_path: Path):
 
     out = Path(cfg["project"]["output_dir"])
     assert (out / "system" / "system.xml").exists()
-    assert (out / "steps" / "00_min1" / "done.ok").exists()
-    assert (out / "steps" / "01_nvt1" / "done.ok").exists()
-    assert (out / "steps" / "02_npt1" / "done.ok").exists()
+    assert (out / "steps" / "min1" / "done.ok").exists()
+    assert (out / "steps" / "nvt1" / "done.ok").exists()
+    assert (out / "steps" / "npt1" / "done.ok").exists()
 
 
 def test_restart_skip_and_checkpoint(tmp_path: Path):
@@ -129,7 +129,7 @@ def test_restart_skip_and_checkpoint(tmp_path: Path):
     run_workflow(validated)
 
     out = Path(cfg["project"]["output_dir"])
-    step_dir = out / "steps" / "00_md1"
+    step_dir = out / "steps" / "md1"
     done = step_dir / "done.ok"
     mtime_before = done.stat().st_mtime
 
@@ -205,5 +205,5 @@ def test_mask_restraints_workflow_run(tmp_path: Path):
     run_workflow(load_and_validate(cfg_path))
 
     out = Path(cfg["project"]["output_dir"])
-    assert (out / "steps" / "00_min1" / "done.ok").exists()
-    assert (out / "steps" / "01_nvt1" / "done.ok").exists()
+    assert (out / "steps" / "min1" / "done.ok").exists()
+    assert (out / "steps" / "nvt1" / "done.ok").exists()
