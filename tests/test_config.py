@@ -104,3 +104,46 @@ def test_index_based_restraints_rejected():
     cfg["steps"][1]["distance_restraints"] = [{"atoms": [0, 1], "r0_a": 3.0, "k_kcal_mol_a2": 2.0}]
     with pytest.raises(ConfigError, match="no longer supported"):
         validate_config(cfg)
+
+
+def test_trajectory_minimization_schema_success():
+    cfg = _base_config()
+    cfg["steps"] = [
+        {
+            "id": "traj_min",
+            "type": "trajectory_minimization",
+            "tolerance_kj_mol_nm": 8.0,
+            "max_iterations": 200,
+            "input": {"trajectory": "runs/x/steps/md1/trajectory.xtc"},
+            "parallel": {"workers": 2},
+            "distance_restraints": [
+                {
+                    "group1_mask": ":1@CA",
+                    "group2_mask": ":1@N",
+                    "r0_a": 3.0,
+                    "tolerance_a": 0.2,
+                    "k_kcal_mol_a2": 2.0,
+                }
+            ],
+        }
+    ]
+    out = validate_config(cfg)
+    step = out["steps"][0]
+    assert step["type"] == "trajectory_minimization"
+    assert step["parallel"]["workers"] == 2
+    assert step["input"]["trajectory"].endswith("trajectory.xtc")
+
+
+def test_trajectory_minimization_rejects_md_only_fields():
+    cfg = _base_config()
+    cfg["steps"] = [
+        {
+            "id": "traj_min",
+            "type": "trajectory_minimization",
+            "tolerance_kj_mol_nm": 8.0,
+            "max_iterations": 200,
+            "n_steps": 100,
+        }
+    ]
+    with pytest.raises(ConfigError, match="not valid for `trajectory_minimization`"):
+        validate_config(cfg)

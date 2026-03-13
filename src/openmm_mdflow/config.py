@@ -109,8 +109,8 @@ def _validate_step(step: Any, index: int) -> dict[str, Any]:
     if not isinstance(step_id, str) or not step_id.strip():
         raise ConfigError(f"`{label}.id` must be a non-empty string.")
     step_type = data.get("type")
-    if step_type not in {"minimization", "md"}:
-        raise ConfigError(f"`{label}.type` must be `minimization` or `md`.")
+    if step_type not in {"minimization", "md", "trajectory_minimization"}:
+        raise ConfigError(f"`{label}.type` must be `minimization`, `md`, or `trajectory_minimization`.")
 
     cleaned: dict[str, Any] = {"id": step_id.strip(), "type": step_type}
 
@@ -123,7 +123,7 @@ def _validate_step(step: Any, index: int) -> dict[str, Any]:
             data["distance_restraints"], f"{label}.distance_restraints"
         )
 
-    if step_type == "minimization":
+    if step_type in {"minimization", "trajectory_minimization"}:
         cleaned["tolerance_kj_mol_nm"] = _as_positive_float(
             data.get("tolerance_kj_mol_nm", 10.0), f"{label}.tolerance_kj_mol_nm"
         )
@@ -132,6 +132,25 @@ def _validate_step(step: Any, index: int) -> dict[str, Any]:
         )
         cleaned["integrator"] = data.get("integrator", "langevin_middle")
         cleaned["timestep_ps"] = _as_positive_float(data.get("timestep_ps", 0.002), f"{label}.timestep_ps")
+
+        if step_type == "trajectory_minimization":
+            forbidden_keys = ("ensemble", "n_steps", "thermostat", "barostat", "reporters")
+            for key in forbidden_keys:
+                if key in data:
+                    raise ConfigError(f"`{label}.{key}` is not valid for `trajectory_minimization`.")
+
+            input_cfg = _require_mapping(data.get("input", {}), f"{label}.input")
+            cleaned_input: dict[str, Any] = {}
+            if "trajectory" in input_cfg:
+                cleaned_input["trajectory"] = _as_non_empty_string(input_cfg["trajectory"], f"{label}.input.trajectory")
+            cleaned["input"] = cleaned_input
+
+            parallel_cfg = _require_mapping(data.get("parallel", {}), f"{label}.parallel")
+            cleaned["parallel"] = {
+                "workers": _as_non_negative_int(
+                    parallel_cfg.get("workers", 1), f"{label}.parallel.workers", allow_zero=False
+                )
+            }
     else:
         ensemble = data.get("ensemble")
         if ensemble not in {"NVT", "NPT"}:

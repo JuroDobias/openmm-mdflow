@@ -7,6 +7,7 @@ import pytest
 import yaml
 
 openmm = pytest.importorskip("openmm")
+mdtraj = pytest.importorskip("mdtraj")
 
 from openmm_mdflow.config import load_and_validate
 from openmm_mdflow.workflow import run_workflow
@@ -207,3 +208,132 @@ def test_mask_restraints_workflow_run(tmp_path: Path):
     out = Path(cfg["project"]["output_dir"])
     assert (out / "steps" / "min1" / "done.ok").exists()
     assert (out / "steps" / "nvt1" / "done.ok").exists()
+
+
+def test_trajectory_minimization_from_previous_step(tmp_path: Path):
+    receptor = tmp_path / "receptor.pdb"
+    _write_minimal_water_pdb(receptor)
+    out_dir = tmp_path / "run_trajmin"
+    cfg = {
+        "project": {"name": "trajmin", "output_dir": str(out_dir), "platform": "CPU"},
+        "system": {
+            "receptor": {"file": str(receptor)},
+            "ligands": [],
+            "cofactors": [],
+            "solvation": {"mode": "vacuum"},
+        },
+        "forcefield": {
+            "protein": ["amber14-all.xml"],
+            "water_ions": ["amber14/tip3p.xml"],
+            "ligand": {"engine": "openff", "model": "openff-2.0.0", "cache": "ff.json"},
+            "hydrogen_mass_amu": 1.5,
+            "nonbonded_cutoff_nm": 0.9,
+        },
+        "steps": [
+            {
+                "id": "md1",
+                "type": "md",
+                "ensemble": "NVT",
+                "n_steps": 4,
+                "timestep_ps": 0.001,
+                "thermostat": {"kind": "langevin_middle", "temperature_k": 300, "friction_per_ps": 1.0},
+                "reporters": {"traj": {"format": "dcd", "interval": 1}},
+            },
+            {
+                "id": "trajmin1",
+                "type": "trajectory_minimization",
+                "tolerance_kj_mol_nm": 10.0,
+                "max_iterations": 10,
+                "parallel": {"workers": 2},
+            },
+        ],
+    }
+    cfg_path = tmp_path / "workflow_trajmin.yaml"
+    with cfg_path.open("w", encoding="utf-8") as handle:
+        yaml.safe_dump(cfg, handle, sort_keys=False)
+
+    run_workflow(load_and_validate(cfg_path))
+
+    input_traj = out_dir / "steps" / "md1" / "trajectory.dcd"
+    out_traj = out_dir / "steps" / "trajmin1" / "trajectory.dcd"
+    assert input_traj.exists()
+    assert out_traj.exists()
+    assert (out_dir / "steps" / "trajmin1" / "done.ok").exists()
+
+    top_pdb = out_dir / "system" / "system.pdb"
+    in_t = mdtraj.load(str(input_traj), top=str(top_pdb))
+    out_t = mdtraj.load(str(out_traj), top=str(top_pdb))
+    assert in_t.n_frames == out_t.n_frames
+
+
+def test_trajectory_minimization_resume_from_frame_progress(tmp_path: Path):
+    receptor = tmp_path / "receptor.pdb"
+    _write_minimal_water_pdb(receptor)
+    out_dir = tmp_path / "run_traj_resume"
+
+    setup_cfg = {
+        "project": {"name": "trajsetup", "output_dir": str(out_dir), "platform": "CPU"},
+        "system": {
+            "receptor": {"file": str(receptor)},
+            "ligands": [],
+            "cofactors": [],
+            "solvation": {"mode": "vacuum"},
+        },
+        "forcefield": {
+            "protein": ["amber14-all.xml"],
+            "water_ions": ["amber14/tip3p.xml"],
+            "ligand": {"engine": "openff", "model": "openff-2.0.0", "cache": "ff.json"},
+            "hydrogen_mass_amu": 1.5,
+            "nonbonded_cutoff_nm": 0.9,
+        },
+        "steps": [
+            {
+                "id": "md1",
+                "type": "md",
+                "ensemble": "NVT",
+                "n_steps": 4,
+                "timestep_ps": 0.001,
+                "thermostat": {"kind": "langevin_middle", "temperature_k": 300, "friction_per_ps": 1.0},
+                "reporters": {"traj": {"format": "dcd", "interval": 1}},
+            }
+        ],
+    }
+    setup_path = tmp_path / "workflow_setup.yaml"
+    with setup_path.open("w", encoding="utf-8") as handle:
+        yaml.safe_dump(setup_cfg, handle, sort_keys=False)
+    run_workflow(load_and_validate(setup_path))
+
+    input_traj = out_dir / "steps" / "md1" / "trajectory.dcd"
+    top_pdb = out_dir / "system" / "system.pdb"
+    in_t = mdtraj.load(str(input_traj), top=str(top_pdb))
+    assert in_t.n_frames >= 4
+
+    cfg = {
+        "project": {"name": "trajresume", "output_dir": str(out_dir), "platform": "CPU"},
+        "system": setup_cfg["system"],
+        "forcefield": setup_cfg["forcefield"],
+        "steps": [
+            {
+                "id": "trajmin_resume",
+                "type": "trajectory_minimization",
+                "tolerance_kj_mol_nm": 10.0,
+                "max_iterations": 10,
+                "input": {"trajectory": str(input_traj)},
+                "parallel": {"workers": 1},
+            }
+        ],
+    }
+    cfg_path = tmp_path / "workflow_traj_resume.yaml"
+    with cfg_path.open("w", encoding="utf-8") as handle:
+        yaml.safe_dump(cfg, handle, sort_keys=False)
+
+    step_dir = out_dir / "steps" / "trajmin_resume"
+    step_dir.mkdir(parents=True, exist_ok=True)
+    partial_out = step_dir / "trajectory.dcd"
+    in_t[:2].save_dcd(str(partial_out))
+    with (step_dir / "frame_progress.json").open("w", encoding="utf-8") as handle:
+        json.dump({"completed_frames": 2}, handle)
+
+    run_workflow(load_and_validate(cfg_path))
+    out_t = mdtraj.load(str(partial_out), top=str(top_pdb))
+    assert out_t.n_frames == in_t.n_frames

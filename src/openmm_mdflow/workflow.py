@@ -12,6 +12,10 @@ from .reporting import build_reporters, checkpoint_interval
 from .restraints import add_distance_restraints, add_positional_restraints
 from .selection import AmberMaskResolver
 from .state import initialize_state, save_state, utc_now_iso
+from .trajectory_minimization import (
+    TrajectoryMinimizationError,
+    run_trajectory_minimization_step,
+)
 
 
 def _load_system_from_disk(system_dir: Path):
@@ -129,6 +133,24 @@ def _save_final_pdb(simulation, path: Path):
         PDBFile.writeFile(simulation.topology, state.getPositions(), handle, keepIds=True)
 
 
+def _save_state_from_positions(topology, system, positions_nm, box_vectors_nm, xml_path: Path, pdb_path: Path):
+    from openmm import Vec3
+    from openmm.app import PDBFile, Simulation
+    from openmm.unit import nanometer, picosecond
+    import openmm as mm
+
+    integrator = mm.VerletIntegrator(0.001 * picosecond)
+    simulation = Simulation(topology, system, integrator)
+    simulation.context.setPositions(positions_nm * nanometer)
+    if box_vectors_nm is not None:
+        box = [Vec3(float(v[0]), float(v[1]), float(v[2])) for v in box_vectors_nm] * nanometer
+        simulation.context.setPeriodicBoxVectors(*box)
+    simulation.saveState(str(xml_path))
+    state = simulation.context.getState(getPositions=True)
+    with pdb_path.open("w", encoding="utf-8") as handle:
+        PDBFile.writeFile(topology, state.getPositions(), handle, keepIds=True)
+
+
 def _run_md_step(simulation, step_cfg: dict[str, Any], step_dir: Path, starting_completed_steps: int) -> int:
     total_steps = int(step_cfg["n_steps"])
     completed = int(starting_completed_steps)
@@ -166,6 +188,16 @@ def _calc_ns_per_day(simulated_ns: float, wall_seconds: float) -> float:
     return simulated_ns / (wall_seconds / 86400.0)
 
 
+def _find_step_trajectory(step_dir: Path) -> Path | None:
+    xtc = step_dir / "trajectory.xtc"
+    if xtc.exists():
+        return xtc
+    dcd = step_dir / "trajectory.dcd"
+    if dcd.exists():
+        return dcd
+    return None
+
+
 def run_workflow(config: dict[str, Any]):
     from openmm import MonteCarloBarostat
     from openmm.app import Simulation
@@ -197,6 +229,7 @@ def run_workflow(config: dict[str, Any]):
     selected_platform_name = platform.getName()
     requested_platform = str(config["project"].get("platform", "auto"))
     prev_state_path: Path | None = None
+    prev_step_dir: Path | None = None
 
     for step_index, step_cfg in enumerate(config["steps"]):
         step_id = step_cfg["id"]
@@ -222,14 +255,22 @@ def run_workflow(config: dict[str, Any]):
             }
         )
 
-        if done_file.exists() and final_state_path.exists():
+        skip_ready = False
+        if step_cfg["type"] == "trajectory_minimization":
+            skip_ready = done_file.exists() and _find_step_trajectory(step_dir) is not None
+        else:
+            skip_ready = done_file.exists() and final_state_path.exists()
+
+        if skip_ready:
             step_state["status"] = "completed"
             step_state["done_at"] = done_file.read_text(encoding="utf-8").strip()
             manifest["steps"][step_id] = step_state
             manifest["updated_at"] = utc_now_iso()
             save_state(output_dir, manifest)
             print(f"[step {step_id}] skipped (already completed).")
-            prev_state_path = final_state_path
+            if final_state_path.exists():
+                prev_state_path = final_state_path
+            prev_step_dir = step_dir
             continue
 
         step_state["status"] = "running"
@@ -238,12 +279,95 @@ def run_workflow(config: dict[str, Any]):
         save_state(output_dir, manifest)
 
         step_system = _clone_system(base_system)
-
         reference_positions = base_positions
         if prev_state_path is not None and prev_state_path.exists():
             reference_positions = _positions_from_state(prev_state_path)
-
         _apply_step_restraints(step_system, step_cfg, reference_positions, step_restraints.get(step_id, {}))
+
+        if step_cfg["type"] == "trajectory_minimization":
+            input_cfg = step_cfg.get("input", {})
+            if "trajectory" in input_cfg:
+                input_trajectory_path = Path(str(input_cfg["trajectory"]))
+            else:
+                if prev_step_dir is None:
+                    raise TrajectoryMinimizationError(
+                        f"Step `{step_id}` needs an input trajectory but there is no previous step."
+                    )
+                prev_traj = _find_step_trajectory(prev_step_dir)
+                if prev_traj is None:
+                    raise TrajectoryMinimizationError(
+                        f"Step `{step_id}` expected previous step trajectory in `{prev_step_dir}` but none was found."
+                    )
+                input_trajectory_path = prev_traj
+            if not input_trajectory_path.exists():
+                raise TrajectoryMinimizationError(
+                    f"Step `{step_id}` input trajectory does not exist: {input_trajectory_path}"
+                )
+
+            try:
+                traj_result = run_trajectory_minimization_step(
+                    step_cfg=step_cfg,
+                    step_dir=step_dir,
+                    topology=topology,
+                    base_system=base_system,
+                    system_pdb_path=Path(pdb_path),
+                    resolved_step_restraints=step_restraints.get(step_id, {}),
+                    input_trajectory_path=input_trajectory_path,
+                    platform_name=selected_platform_name,
+                    platform_properties=platform_properties,
+                )
+            except Exception as exc:
+                if requested_platform == "auto" and selected_platform_name == "CUDA":
+                    print(
+                        "Warning: CUDA context initialization failed in auto mode during trajectory minimization. "
+                        "Falling back to CPU platform for this step."
+                    )
+                    traj_result = run_trajectory_minimization_step(
+                        step_cfg=step_cfg,
+                        step_dir=step_dir,
+                        topology=topology,
+                        base_system=base_system,
+                        system_pdb_path=Path(pdb_path),
+                        resolved_step_restraints=step_restraints.get(step_id, {}),
+                        input_trajectory_path=input_trajectory_path,
+                        platform_name="CPU",
+                        platform_properties={"Threads": "1"},
+                    )
+                    selected_platform_name = "CPU"
+                    platform_properties = {"Threads": "1"}
+                else:
+                    raise exc
+
+            completed_steps = int(traj_result.completed_frames)
+            if traj_result.last_positions_nm is not None:
+                _save_state_from_positions(
+                    topology,
+                    base_system,
+                    traj_result.last_positions_nm,
+                    traj_result.last_box_vectors_nm,
+                    final_state_path,
+                    final_pdb_path,
+                )
+                prev_state_path = final_state_path
+
+            print(
+                f"[step {step_id}] trajectory minimization done in {traj_result.wall_seconds:.2f}s | "
+                f"frames={traj_result.completed_frames}/{traj_result.total_frames} | "
+                f"output={traj_result.output_path.name}"
+            )
+
+            done_file.write_text(utc_now_iso(), encoding="utf-8")
+            step_state["status"] = "completed"
+            step_state["completed_steps"] = int(completed_steps)
+            step_state["done_at"] = done_file.read_text(encoding="utf-8").strip()
+            step_state["updated_at"] = utc_now_iso()
+            step_state["trajectory"] = str(traj_result.output_path)
+            manifest["steps"][step_id] = deepcopy(step_state)
+            manifest["updated_at"] = utc_now_iso()
+            save_state(output_dir, manifest)
+            prev_step_dir = step_dir
+            continue
+
         integrator = _build_integrator(step_cfg)
 
         if step_cfg["type"] == "md" and step_cfg["ensemble"] == "NPT":
@@ -331,3 +455,4 @@ def run_workflow(config: dict[str, Any]):
         save_state(output_dir, manifest)
 
         prev_state_path = final_state_path
+        prev_step_dir = step_dir

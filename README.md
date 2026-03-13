@@ -120,6 +120,16 @@ steps:
         interval: 1000
       checkpoint:
         interval: 5000
+
+  - id: trajmin_post
+    type: trajectory_minimization
+    tolerance_kj_mol_nm: 10.0
+    max_iterations: 500
+    # optional, defaults to previous step trajectory
+    input:
+      trajectory: runs/my_run/steps/npt_eq/trajectory.xtc
+    parallel:
+      workers: 2
 ```
 
 ## Notes
@@ -129,3 +139,4 @@ steps:
 - SDF-based ligand/cofactor parameterization requires `openmmforcefields` and OpenFF components.
 - Restraints now require Amber mask fields (`mask`, `group1_mask`, `group2_mask`); old index-based `atoms` keys are not supported.
 - Distance restraints are flat-bottom harmonic around `r0_a` with optional `tolerance_a` (default `0.0` A).
+- `trajectory_minimization` minimizes each input trajectory frame and writes a new trajectory in the current step directory.
