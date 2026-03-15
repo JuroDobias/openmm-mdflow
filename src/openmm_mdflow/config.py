@@ -113,6 +113,21 @@ def _validate_step(step: Any, index: int) -> dict[str, Any]:
         raise ConfigError(f"`{label}.type` must be `minimization`, `md`, or `trajectory_minimization`.")
 
     cleaned: dict[str, Any] = {"id": step_id.strip(), "type": step_type}
+    has_new_reference = "restraint_reference" in data
+    has_legacy_reference = "restraint_reference_pdb" in data
+    if has_new_reference and has_legacy_reference:
+        raise ConfigError(
+            f"`{label}.restraint_reference` and `{label}.restraint_reference_pdb` cannot be used together. "
+            "Use only `restraint_reference`."
+        )
+    if has_new_reference:
+        cleaned["restraint_reference"] = _as_non_empty_string(
+            data.get("restraint_reference"), f"{label}.restraint_reference"
+        )
+    elif has_legacy_reference:
+        cleaned["restraint_reference"] = _as_non_empty_string(
+            data.get("restraint_reference_pdb"), f"{label}.restraint_reference_pdb"
+        )
 
     if "positional_restraints" in data:
         cleaned["positional_restraints"] = _validate_positional_restraints(

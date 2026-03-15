@@ -109,6 +109,7 @@ def _worker_build_runtime(
     platform_name: str,
     platform_properties: dict[str, str],
     init_reference_positions_nm,
+    update_positional_reference_each_frame: bool,
 ):
     from openmm import Platform, XmlSerializer
     from openmm.unit import nanometer
@@ -132,7 +133,7 @@ def _worker_build_runtime(
     integrator = _build_integrator(step_cfg)
     platform = Platform.getPlatformByName(platform_name)
     simulation = Simulation(topology, system, integrator, platform, platform_properties)
-    return simulation, pos_force, pos_atoms
+    return simulation, pos_force, pos_atoms, update_positional_reference_each_frame
 
 
 def _update_positional_reference(pos_force, pos_atoms: list[int], frame_nm):
@@ -147,13 +148,14 @@ def _minimize_single_frame(
     simulation,
     pos_force,
     pos_atoms: list[int] | None,
+    update_positional_reference_each_frame: bool,
     frame_nm,
     box_vectors_nm,
     step_cfg: dict[str, Any],
 ):
     from openmm.unit import kilojoule_per_mole, nanometer
 
-    if pos_force is not None and pos_atoms is not None:
+    if pos_force is not None and pos_atoms is not None and update_positional_reference_each_frame:
         _update_positional_reference(pos_force, pos_atoms, frame_nm)
         pos_force.updateParametersInContext(simulation.context)
 
@@ -186,12 +188,13 @@ def _worker_init(
     platform_name: str,
     platform_properties: dict[str, str],
     init_reference_positions_nm,
+    update_positional_reference_each_frame: bool,
 ):
     from openmm.app import PDBFile
 
     global _WORKER_RUNTIME
     topology = PDBFile(str(topology_pdb_path)).topology
-    simulation, pos_force, pos_atoms = _worker_build_runtime(
+    simulation, pos_force, pos_atoms, update_reference_each_frame = _worker_build_runtime(
         topology,
         system_xml,
         step_cfg,
@@ -199,16 +202,17 @@ def _worker_init(
         platform_name,
         platform_properties,
         init_reference_positions_nm,
+        update_positional_reference_each_frame,
     )
-    _WORKER_RUNTIME = (simulation, pos_force, pos_atoms, step_cfg)
+    _WORKER_RUNTIME = (simulation, pos_force, pos_atoms, update_reference_each_frame, step_cfg)
 
 
 def _worker_run_frame(task):
     frame_index, frame_nm, box_vectors_nm = task
     global _WORKER_RUNTIME
-    simulation, pos_force, pos_atoms, step_cfg = _WORKER_RUNTIME
+    simulation, pos_force, pos_atoms, update_reference_each_frame, step_cfg = _WORKER_RUNTIME
     out_positions, out_box = _minimize_single_frame(
-        simulation, pos_force, pos_atoms, frame_nm, box_vectors_nm, step_cfg
+        simulation, pos_force, pos_atoms, update_reference_each_frame, frame_nm, box_vectors_nm, step_cfg
     )
     return frame_index, out_positions, out_box
 
@@ -224,6 +228,7 @@ def run_trajectory_minimization_step(
     input_trajectory_path: Path,
     platform_name: str,
     platform_properties: dict[str, str],
+    fixed_reference_positions_nm=None,
 ) -> TrajectoryMinResult:
     from openmm import XmlSerializer
     from openmm.unit import nanometer
@@ -266,6 +271,10 @@ def run_trajectory_minimization_step(
         )
 
     frame_iter = _frame_iter(input_trajectory_path, system_pdb_path)
+    update_positional_reference_each_frame = fixed_reference_positions_nm is None
+    init_reference_positions_nm = (
+        first_frame_positions_nm if fixed_reference_positions_nm is None else fixed_reference_positions_nm
+    )
     system_xml = XmlSerializer.serialize(base_system)
     workers = int(step_cfg.get("parallel", {}).get("workers", 1))
 
@@ -277,21 +286,28 @@ def run_trajectory_minimization_step(
 
     try:
         if workers <= 1:
-            simulation, pos_force, pos_atoms = _worker_build_runtime(
+            simulation, pos_force, pos_atoms, update_reference_each_frame = _worker_build_runtime(
                 topology,
                 system_xml,
                 step_cfg,
                 resolved_step_restraints,
                 platform_name,
                 platform_properties,
-                first_frame_positions_nm,
+                init_reference_positions_nm,
+                update_positional_reference_each_frame,
             )
             for frame_positions_nm, frame_box_nm in frame_iter:
                 if frame_index < completed_frames:
                     frame_index += 1
                     continue
                 out_positions_nm, out_box_nm = _minimize_single_frame(
-                    simulation, pos_force, pos_atoms, frame_positions_nm, frame_box_nm, step_cfg
+                    simulation,
+                    pos_force,
+                    pos_atoms,
+                    update_reference_each_frame,
+                    frame_positions_nm,
+                    frame_box_nm,
+                    step_cfg,
                 )
                 if out_box_nm is not None:
                     writer.writeModel(out_positions_nm * nanometer, periodicBoxVectors=_to_box_vectors_quantity(out_box_nm))
@@ -317,7 +333,8 @@ def run_trajectory_minimization_step(
                         resolved_step_restraints,
                         platform_name,
                         platform_properties,
-                        first_frame_positions_nm,
+                        init_reference_positions_nm,
+                        update_positional_reference_each_frame,
                     ),
                 ) as pool:
                     for frame_positions_nm, frame_box_nm in frame_iter:
@@ -357,21 +374,28 @@ def run_trajectory_minimization_step(
                             last_box_vectors_nm = out_box_nm
             except (PermissionError, OSError):
                 # Some restricted environments disallow multiprocessing semaphores.
-                simulation, pos_force, pos_atoms = _worker_build_runtime(
+                simulation, pos_force, pos_atoms, update_reference_each_frame = _worker_build_runtime(
                     topology,
                     system_xml,
                     step_cfg,
                     resolved_step_restraints,
                     platform_name,
                     platform_properties,
-                    first_frame_positions_nm,
+                    init_reference_positions_nm,
+                    update_positional_reference_each_frame,
                 )
                 for frame_positions_nm, frame_box_nm in frame_iter:
                     if frame_index < completed_frames:
                         frame_index += 1
                         continue
                     out_positions_nm, out_box_nm = _minimize_single_frame(
-                        simulation, pos_force, pos_atoms, frame_positions_nm, frame_box_nm, step_cfg
+                        simulation,
+                        pos_force,
+                        pos_atoms,
+                        update_reference_each_frame,
+                        frame_positions_nm,
+                        frame_box_nm,
+                        step_cfg,
                     )
                     if out_box_nm is not None:
                         writer.writeModel(

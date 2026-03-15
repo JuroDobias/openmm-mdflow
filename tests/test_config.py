@@ -116,6 +116,7 @@ def test_trajectory_minimization_schema_success():
             "max_iterations": 200,
             "input": {"trajectory": "runs/x/steps/md1/trajectory.xtc"},
             "parallel": {"workers": 2},
+            "restraint_reference": "refs/posref.pdb",
             "distance_restraints": [
                 {
                     "group1_mask": ":1@CA",
@@ -132,6 +133,7 @@ def test_trajectory_minimization_schema_success():
     assert step["type"] == "trajectory_minimization"
     assert step["parallel"]["workers"] == 2
     assert step["input"]["trajectory"].endswith("trajectory.xtc")
+    assert step["restraint_reference"] == "refs/posref.pdb"
 
 
 def test_trajectory_minimization_rejects_md_only_fields():
@@ -146,4 +148,36 @@ def test_trajectory_minimization_rejects_md_only_fields():
         }
     ]
     with pytest.raises(ConfigError, match="not valid for `trajectory_minimization`"):
+        validate_config(cfg)
+
+
+def test_restraint_reference_validation():
+    cfg = _base_config()
+    cfg["steps"][0]["restraint_reference"] = "refs/min_ref.pdb"
+    out = validate_config(cfg)
+    assert out["steps"][0]["restraint_reference"] == "refs/min_ref.pdb"
+
+    cfg = _base_config()
+    cfg["steps"][0]["restraint_reference"] = ""
+    with pytest.raises(ConfigError, match="restraint_reference"):
+        validate_config(cfg)
+
+
+def test_restraint_reference_input_token_and_legacy_alias():
+    cfg = _base_config()
+    cfg["steps"][0]["restraint_reference"] = "input"
+    out = validate_config(cfg)
+    assert out["steps"][0]["restraint_reference"] == "input"
+
+    cfg = _base_config()
+    cfg["steps"][0]["restraint_reference_pdb"] = "refs/legacy_ref.pdb"
+    out = validate_config(cfg)
+    assert out["steps"][0]["restraint_reference"] == "refs/legacy_ref.pdb"
+
+
+def test_restraint_reference_rejects_conflicting_keys():
+    cfg = _base_config()
+    cfg["steps"][0]["restraint_reference"] = "input"
+    cfg["steps"][0]["restraint_reference_pdb"] = "refs/legacy_ref.pdb"
+    with pytest.raises(ConfigError, match="cannot be used together"):
         validate_config(cfg)

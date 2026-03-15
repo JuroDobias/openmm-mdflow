@@ -87,6 +87,7 @@ forcefield:
 steps:
   - id: min1
     type: minimization
+    restraint_reference: refs/min_reference.pdb  # optional positional-restraint reference
     tolerance_kj_mol_nm: 10.0
     max_iterations: 1000
     positional_restraints:
@@ -96,6 +97,7 @@ steps:
 
   - id: npt_eq
     type: md
+    restraint_reference: input  # optional: built input geometry (output_dir/system/system.pdb)
     ensemble: NPT
     n_steps: 250000
     timestep_ps: 0.004
@@ -123,6 +125,7 @@ steps:
 
   - id: trajmin_post
     type: trajectory_minimization
+    restraint_reference: refs/trajmin_reference.pdb  # optional; fixed positional reference for all frames
     tolerance_kj_mol_nm: 10.0
     max_iterations: 500
     # optional, defaults to previous step trajectory
@@ -140,3 +143,7 @@ steps:
 - Restraints now require Amber mask fields (`mask`, `group1_mask`, `group2_mask`); old index-based `atoms` keys are not supported.
 - Distance restraints are flat-bottom harmonic around `r0_a` with optional `tolerance_a` (default `0.0` A).
 - `trajectory_minimization` minimizes each input trajectory frame and writes a new trajectory in the current step directory.
+- `steps[].restraint_reference` is optional and only used when `positional_restraints` is present.
+- `steps[].restraint_reference: input` uses `output_dir/system/system.pdb` as the positional-restraint reference.
+- If set on `trajectory_minimization`, the selected reference is fixed for all frames.
+- Legacy `steps[].restraint_reference_pdb` is still accepted for compatibility, but will be removed in a future release.

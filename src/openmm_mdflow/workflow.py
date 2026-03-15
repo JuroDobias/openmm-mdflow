@@ -44,6 +44,37 @@ def _positions_from_state(state_path: Path):
     return state.getPositions(asNumpy=True)
 
 
+def _positions_from_pdb_reference(reference_pdb: Path, topology, step_id: str, provided_value: str):
+    from openmm.app import PDBFile
+
+    if not reference_pdb.exists():
+        raise ValueError(
+            f"Step `{step_id}` positional restraint reference `{provided_value}` does not exist: {reference_pdb}"
+        )
+    try:
+        pdb = PDBFile(str(reference_pdb))
+    except Exception as exc:
+        raise ValueError(
+            f"Step `{step_id}` failed to read positional restraint reference `{provided_value}` "
+            f"from `{reference_pdb}`: {exc}"
+        ) from exc
+
+    expected = int(topology.getNumAtoms())
+    found = int(pdb.topology.getNumAtoms())
+    if found != expected:
+        raise ValueError(
+            f"Step `{step_id}` positional restraint reference `{provided_value}` atom count mismatch: "
+            f"expected {expected}, found {found} ({reference_pdb})."
+        )
+    return pdb.positions
+
+
+def _resolve_reference_pdb_path(reference_value: str, output_dir: Path) -> Path:
+    if reference_value == "input":
+        return output_dir / "system" / "system.pdb"
+    return Path(reference_value)
+
+
 def _apply_state_positions_to_context(simulation, state_path: Path):
     from openmm import XmlSerializer
 
@@ -282,6 +313,18 @@ def run_workflow(config: dict[str, Any]):
         reference_positions = base_positions
         if prev_state_path is not None and prev_state_path.exists():
             reference_positions = _positions_from_state(prev_state_path)
+        fixed_reference_positions_nm = None
+        reference_value = step_cfg.get("restraint_reference")
+        if "positional_restraints" in step_cfg and reference_value:
+            reference_value = str(reference_value)
+            reference_pdb_path = _resolve_reference_pdb_path(reference_value, output_dir)
+            reference_positions = _positions_from_pdb_reference(
+                reference_pdb_path,
+                topology,
+                step_id,
+                reference_value,
+            )
+            fixed_reference_positions_nm = reference_positions.value_in_unit(nanometer)
         _apply_step_restraints(step_system, step_cfg, reference_positions, step_restraints.get(step_id, {}))
 
         if step_cfg["type"] == "trajectory_minimization":
@@ -315,6 +358,7 @@ def run_workflow(config: dict[str, Any]):
                     input_trajectory_path=input_trajectory_path,
                     platform_name=selected_platform_name,
                     platform_properties=platform_properties,
+                    fixed_reference_positions_nm=fixed_reference_positions_nm,
                 )
             except Exception as exc:
                 if requested_platform == "auto" and selected_platform_name == "CUDA":
@@ -332,6 +376,7 @@ def run_workflow(config: dict[str, Any]):
                         input_trajectory_path=input_trajectory_path,
                         platform_name="CPU",
                         platform_properties={"Threads": "1"},
+                        fixed_reference_positions_nm=fixed_reference_positions_nm,
                     )
                     selected_platform_name = "CPU"
                     platform_properties = {"Threads": "1"}
